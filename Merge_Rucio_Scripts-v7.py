@@ -298,7 +298,7 @@ class Rucio :
         logger.debug("| - - - Creating replica rule for %s %s at rse: %s" % (type_1['type'], group, destRSE))
         if destRSE:
             try:
-                rule = self.rulesClient.add_replication_rule([{"scope":self.myscope,"name":group}],copies=1, rse_expression=destRSE, grouping='ALL', account='bruzzese', purge_replicas=True)
+                rule = self.rulesClient.add_replication_rule([{"scope":self.myscope,"name":group}],copies=1, rse_expression=destRSE, grouping='ALL', account=self.account, purge_replicas=True)
                 logger.debug("| - - - - Rule succesfully replicated at %s" % destRSE)
                 logger.debug("| - - - - - The %s has the following id %s" % (rule, destRSE))
                 return(rule[0])
@@ -631,7 +631,7 @@ def register_rucio() :
                         result_dict[f_name] = temp_dict[f_name]                                          
                         
                     # 5) Create the Main Replication Rule at Destination RSE
-
+                    main_rule = r1.addReplicaRule(dest, group['container_3'])
                     logger.debug("| - - - - Getting parameters for rse %s" % destRSE)
 
                     # 6 ) Create the json array 
