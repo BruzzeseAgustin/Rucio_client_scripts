@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 # coding: utf-8
 
 # In[1]:
@@ -33,7 +33,7 @@ import pathlib
 import time 
 import pytz
 from urllib.parse import urlunsplit
-
+import graphyte, socket
 from dateutil import parser
 from datetime import (
     datetime,
@@ -48,7 +48,7 @@ from gfal2 import (
 from io import StringIO
 
 # Set Rucio virtual environment configuration 
-os.environ['RUCIO_HOME']=os.path.expanduser('~/Rucio-v2/rucio')
+#os.environ['RUCIO_HOME']=os.path.expanduser('~/Rucio-v2/rucio')
 from rucio.rse import rsemanager as rsemgr
 from rucio.client.client import Client
 from rucio.client.didclient import DIDClient
@@ -57,7 +57,9 @@ import rucio.rse.rsemanager as rsemgr
 from rucio.client import RuleClient
 
 from rucio.common.exception import (AccountNotFound, Duplicate, RucioException, DuplicateRule, InvalidObject, DataIdentifierAlreadyExists, FileAlreadyExists, RucioException,
-                                    AccessDenied)
+                                    AccessDenied, InsufficientAccountLimit, RuleNotFound, AccessDenied, InvalidRSEExpression,
+                                    InvalidReplicationRule, RucioException, DataIdentifierNotFound, InsufficientTargetRSEs,
+                                    ReplicationRuleCreationTemporaryFailed, InvalidRuleWeight, StagingAreaRuleRequiresLifetime)
 
 from rucio.common.utils import adler32, detect_client_location, execute, generate_uuid, md5, send_trace, GLOBALLY_SUPPORTED_CHECKSUMS
 
@@ -262,7 +264,7 @@ class Rucio :
 
     ############################
     def create_groups(self, organization) :
-
+        
         # 2.1) Create the dataset and containers for the file 
         self.createDataset(organization['dataset_1']) 
         # 2.1.1) Attach the dataset and containers for the file 
@@ -304,12 +306,20 @@ class Rucio :
                 return(rule[0])
             except DuplicateRule:
                 exc_type, exc_obj, tb = sys.exc_info()
-                rules = list(self.client.list_account_rules(account=account))
+                rules = list(self.client.list_account_rules(account=self.account))
                 if rules : 
                     for rule in rules :
                         if rule['rse_expression'] == destRSE and rule['scope'] == self.myscope and rule['name'] == group:
                             logger.debug('| - - - - Rule already exists %s which contains the following DID %s:%s %s' % (rule['id'],self.myscope, group, str(exc_obj)))
-    
+            except ReplicationRuleCreationTemporaryFailed:    
+                exc_type, exc_obj, tb = sys.exc_info()
+                rules = list(self.client.list_account_rules(account=self.account))
+                if rules : 
+                    for rule in rules :
+                        if rule['rse_expression'] == destRSE and rule['scope'] == self.myscope and rule['name'] == group:
+                            print('| - - - - Rule already exists %s which contains the following DID %s:%s %s' % (rule['id'],self.myscope, group, str(exc_obj)))                
+                
+                
     ############################
 
     ## Create Rules for not registered DIDs
@@ -331,13 +341,24 @@ class Rucio :
         for filemd in filemds :
             outdated = filemd['replica']['name']
             self.registerIntoGroup(outdated, carrier_dataset)
-
+            
         # Add dummy dataset for replicating at Destination RSE
-        rule_child = self.addReplicaRule(dest_RSE, group=carrier_dataset)
+        # rule_child = self.addReplicaRule(dest_RSE, group=carrier_dataset)
+        for i in range(0,100):
+            while True:
+                try:
+                    # do stuff
+                    rule = self.addReplicaRule(dest_RSE, group=carrier_dataset)
+                    if rule != None :
+                        rule_child = rule
+                except SomeSpecificException:
+                    continue
+                break
+
 
         # Add dummy dataset for replicating Origin RSE
         rule_parent = self.addReplicaRule(org_RSE, group=carrier_dataset)
-
+        
         # Create a relation rule between origin and destiny RSE, so that the source data can be deleted 
         rule = self.client.update_replication_rule(rule_id=rule_parent, options={'lifetime': 10, 'child_rule_id':rule_child, 'purge_replicas':True})
         logger.debug('| - - - - Creating relationship between parent %s and child %s : %s' % (rule_parent, rule_child, rule))
@@ -574,10 +595,11 @@ def register_rucio() :
     if listOfFiles :
         # Create a dictionary with the properties for writing a json 
         result_dict = dict();
-        for destRSE in r1.destRse :
+        for dest in r1.destRse :
             # Create an array for those files that has not been replicated 
             n_unreplicated = []
             for n in range(0,len(listOfFiles)):
+            # for n in range(0,20):
                 name = str(listOfFiles[n])
                 logger.debug('|  -  ' + str(n) + ' - ' + str(len(listOfFiles)) + ' name : ' + name)
                 
@@ -585,11 +607,11 @@ def register_rucio() :
                 f_name = base=os.path.basename(name)
 
                 # Check if file is already is registered at a particular destination RSE
-                check = r1.check_replica(lfn=f_name.replace('+','_'), dest_rse=destRSE)
+                check = r1.check_replica(lfn=f_name.replace('+','_'), dest_rse=dest)
                 
                 # If it is registered, skip add replica 
                 if check != False : ## needs to be changed to False
-                    logger.debug('| - - The FILE %s already have a replica at RSE %s : %s' % (f_name, destRSE, check))
+                    logger.debug('| - - The FILE %s already have a replica at RSE %s : %s' % (f_name, dest, check))
 
                 # Else, if the files has no replica at destination RSE
                 else :
@@ -612,7 +634,7 @@ def register_rucio() :
                     temp_dict[f_name] = {}
                     temp_dict[f_name]['Properties'] = {**metaData['replica'], **{'updated': datetime.utcnow().replace(tzinfo=pytz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}} 
                     temp_dict[f_name]['Organization'] = group
-                    temp_dict[f_name]['Replicated'] = {destRSE : {**{'state': 'REPLICATING'}, **{'registered': datetime.utcnow().replace(tzinfo=pytz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}}}
+                    temp_dict[f_name]['Replicated'] = {dest : {**{'state': 'REPLICATING'}, **{'registered': datetime.utcnow().replace(tzinfo=pytz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}}}
 
                     # 4) Contruct a dictionary 
                     if f_name in result_dict :   
@@ -632,18 +654,19 @@ def register_rucio() :
                         
                     # 5) Create the Main Replication Rule at Destination RSE
                     main_rule = r1.addReplicaRule(dest, group['container_3'])
-                    logger.debug("| - - - - Getting parameters for rse %s" % destRSE)
+                    logger.debug("| - - - - Getting parameters for rse %s" % dest)
 
                     # 6 ) Create the json array 
 
                     # Finally, add them to a general list 
                     n_unreplicated.append(metaData)
                     
-            logger.debug('Your are going to replicate %s files' % str(len(n_unreplicated)))        
+            logger.debug('Your are going to replicate %s files' % str(len(n_unreplicated)))   
+            print('Your are going to replicate %s files' % str(len(n_unreplicated)))
             ## Now, create Dummy rules between the ORIGIN and DESTINATION RSEs  
             if len(n_unreplicated) > 0 :
-                r1.outdated_register_replica(n_unreplicated, destRSE, r1.orgRse)
-        
+                r1.outdated_register_replica(n_unreplicated, dest, r1.orgRse)
+
         # Finally return the information of the replicas as a dictionary
         return(result_dict)
 
@@ -725,67 +748,45 @@ class Grafana :
     
 
 
-# In[8]:
+# In[ ]:
 
 
 if __name__ == '__main__':
     
-    while True :
-        # Initialize Rucio class and functions
+    # Initialize Rucio class and functions
 
-        r1 = Rucio(myscope='testing', orgRse='PIC-INJECT', 
-                   destRse=['PIC-DCACHE', 'INFN-NA-DPM'], 
-                   account='bruzzese', working_folder='Magic-test')
+    r1 = Rucio(myscope='testing', orgRse='PIC-INJECT', 
+               destRse=['PIC-DCACHE'], 
+               account='bruzzese', working_folder='Magic-test')
 
-        r1.myfunc() 
+    r1.myfunc() 
 
-        # It creates the main rule for replication at Destinatio RSE (see rses_catch)
-        replication_dict = register_rucio()
+    # It creates the main rule for replication at Destinatio RSE (see rses_catch)
+    replication_dict = register_rucio()
 
-        if json_check() == True :
-            check_dict = stateCheck()
-            # if both results resulted ok
-            if isinstance(replication_dict,dict) & isinstance(check_dict,dict):
-                replication_dict.update(check_dict)
-            elif not check_dict : 
-                replication_dict = replication_dict
-            elif not replication_dict: 
-                replication_dict = check_dict
+    if json_check() == True :
+        check_dict = stateCheck()
+        # if both results resulted ok
+        if isinstance(replication_dict,dict) & isinstance(check_dict,dict):
+            replication_dict.update(check_dict)
+        elif not check_dict : 
+            replication_dict = replication_dict
+        elif not replication_dict: 
+            replication_dict = check_dict
 
-        # creates a resulting dictionary with the files found with their respective 
-        # RSEs where they have been replicated
+    # creates a resulting dictionary with the files found with their respective 
+    # RSEs where they have been replicated
 
-        json_write(replication_dict)
+    json_write(replication_dict)
 
-        '''# Load grafana module
-        g1 = Grafana()
+    '''# Load grafana module
+    g1 = Grafana()
 
-        # 1) Plot general state of rules 
-        g1.send_to_graf(r1.stats_rules(r1.rules()))
+    # 1) Plot general state of rules 
+    g1.send_to_graf(r1.stats_rules(r1.rules()))
 
-        # 2) Plot state of replicas per RSE
-        g1.send_to_graf(r1.stats_replica_rules(r1.rules()))
+    # 2) Plot state of replicas per RSE
+    g1.send_to_graf(r1.stats_replica_rules(r1.rules()))
 
-        # 3) Plot RSE usage 
-        g1.send_to_graf(r1.stats_usage_rules(r1.rses()))'''
-
-        time.sleep(1800)   
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
+    # 3) Plot RSE usage 
+    g1.send_to_graf(r1.stats_usage_rules(r1.rses()))'''
