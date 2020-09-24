@@ -95,7 +95,7 @@ def look_for_sources(path) :
 
 def groups(name_file) :
     organization = dict();
-    
+
     f_name = os.path.basename(name_file)
 
     organization['replica'] = f_name.replace('+','_')
@@ -104,9 +104,8 @@ def groups(name_file) :
     organization['container_2'] = look_for_sources(name_file)
     organization['container_3'] = look_for_type_files(name_file)  
     organization['name'] = "/".join(filter(bool, [look_for_type_files(name_file),look_for_sources(name_file),look_for_data(name_file),look_for_run(name_file)]))
-    
+    organization['fullname'] = "/".join(filter(bool, [look_for_type_files(name_file),look_for_sources(name_file),look_for_data(name_file),look_for_run(name_file),f_name.replace('+','_')]))
     return(organization)
-     
 
 ############################
 
