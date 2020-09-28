@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # coding: utf-8
 
 # In[1]:
@@ -48,14 +48,14 @@ from gfal2 import (
 from io import StringIO
 
 # Set Rucio virtual environment configuration 
-#os.environ['RUCIO_HOME']=os.path.expanduser('~/Rucio-v2/rucio')
+os.environ['RUCIO_HOME']=os.path.expanduser('~/Rucio-v2/rucio')
 from rucio.rse import rsemanager as rsemgr
 from rucio.client.client import Client
 from rucio.client.didclient import DIDClient
 from rucio.client.replicaclient import ReplicaClient
 import rucio.rse.rsemanager as rsemgr
-from rucio.client import RuleClient
-
+# from rucio.client import RuleClient
+from rucio.client.ruleclient import RuleClient
 from rucio.common.exception import (AccountNotFound, Duplicate, RucioException, DuplicateRule, InvalidObject, DataIdentifierAlreadyExists, FileAlreadyExists, RucioException,
                                     AccessDenied, InsufficientAccountLimit, RuleNotFound, AccessDenied, InvalidRSEExpression,
                                     InvalidReplicationRule, RucioException, DataIdentifierNotFound, InsufficientTargetRSEs,
@@ -123,7 +123,7 @@ class Rucio :
         Return the base path of the rucio url
         """
         rse_settings = rsemgr.get_rse_info(self.orgRse)
-        protocol = rse_settings['protocols'][1]
+        protocol = rse_settings['protocols'][0]
         
         schema = protocol['scheme']
         prefix = protocol['prefix']
@@ -147,21 +147,21 @@ class Rucio :
         """
         Check if a replica of the given file at the site already exists.
         """
-        if lfn : 
-            replicas = list(
-                self.client.list_replicas([{
-                    'scope': self.myscope,
-                    'name': lfn
-                }], rse_expression=dest_rse))
+        print('here', self.myscope, lfn, dest_rse)
+        if lfn :
+            try:  
+                replicas = list(
+                    self.client.list_replicas([{'scope': self.myscope,'name': lfn}], rse_expression=dest_rse))
 
-            if replicas:
-                for replica in replicas:
-                    if isinstance(replica,dict) :
-                        if dest_rse in replica['rses']:
-                            path = replica['rses'][dest_rse][0]
-                            return(path)
-            return(False)
-        
+                if replicas:
+                    for replica in replicas:
+                        if isinstance(replica,dict) :
+                            if dest_rse in replica['rses']:
+                                path = replica['rses'][dest_rse][0]
+                                return(path)
+                return(False)
+            except:
+                pass
     ############################
 
     ## Create Metadata for DIDs
@@ -183,6 +183,7 @@ class Rucio :
         '''
         name = os.path.basename(p_file)
         name = name.replace('/','')
+        name = name.replace('%','_')
 
         replica = {
         'scope': self.myscope,
@@ -264,26 +265,30 @@ class Rucio :
 
     ############################
     def create_groups(self, organization) :
-        
-        # 2.1) Create the dataset and containers for the file 
-        self.createDataset(organization['dataset_1']) 
-        # 2.1.1) Attach the dataset and containers for the file 
-        self.registerIntoGroup(organization['replica'], organization['dataset_1'])        
+ 
+        #print(organization)
+        # 2.1) Create the dataset and containers for the file
+        self.createDataset(organization['dataset_1'].replace('%','_'))
+        # 2.1.1) Attach the dataset and containers for the file
+        self.registerIntoGroup(organization['replica'].replace('%','_'), organization['dataset_1'].replace('%','_'))
 
-        # 2.2) Create the dataset and containers for the file 
-        self.createcontainer(organization['container_1']) 
-        # 2.2.1) Attach the dataset and containers for the file 
-        self.registerIntoGroup(organization['dataset_1'], organization['container_1'])        
+        # 2.2) Create the dataset and containers for the file
+        self.createcontainer(organization['container_1'].replace('%','_'))
+        # 2.2.1) Attach the dataset and containers for the file
+        self.registerIntoGroup(organization['dataset_1'].replace('%','_'), organization['container_1'].replace('%','_'))
 
-        # 2.3) Create the dataset and containers for the file 
-        self.createcontainer(organization['container_2']) 
-        # 2.3.1) Attach the dataset and containers for the file 
-        self.registerIntoGroup(organization['container_1'], organization['container_2'])        
+        # 2.3) Create the dataset and containers for the file
+        self.createcontainer(organization['container_2'].replace('%','_'))
+        # 2.3.1) Attach the dataset and containers for the file
+        self.registerIntoGroup(organization['container_1'].replace('%','_'), organization['container_2'].replace('%','_'))
 
-        # 2.4) Create the dataset and containers for the file 
-        self.createcontainer(organization['container_3']) 
-        # 2.4.1) Attach the dataset and containers for the file             
-        self.registerIntoGroup(organization['container_2'], organization['container_3'])   
+        # 2.4) Create the dataset and containers for the file
+        self.createcontainer(organization['container_3'].replace('%','_'))
+        # 2.4.1) Attach the dataset and containers for the file
+        self.registerIntoGroup(organization['container_2'].replace('%','_'), organization['container_3'].replace('%','_'))
+
+
+
 
     
     ############################
@@ -343,22 +348,24 @@ class Rucio :
             self.registerIntoGroup(outdated, carrier_dataset)
             
         # Add dummy dataset for replicating at Destination RSE
-        # rule_child = self.addReplicaRule(dest_RSE, group=carrier_dataset)
+        # Sometimes Rucio ends up with an error message like this : rucio.common.exception.RuleNotFound: No replication rule found. 
+        # In order to avoid that nonsense error we do the following loop :
         for i in range(0,100):
             while True:
                 try:
                     # do stuff
                     rule = self.addReplicaRule(dest_RSE, group=carrier_dataset)
                     if rule != None :
-                        rule_child = rule
+                        rule_child = rule 
                 except SomeSpecificException:
                     continue
                 break
-
+        
 
         # Add dummy dataset for replicating Origin RSE
         rule_parent = self.addReplicaRule(org_RSE, group=carrier_dataset)
         
+        print(rule_child, rule_parent)
         # Create a relation rule between origin and destiny RSE, so that the source data can be deleted 
         rule = self.client.update_replication_rule(rule_id=rule_parent, options={'lifetime': 10, 'child_rule_id':rule_child, 'purge_replicas':True})
         logger.debug('| - - - - Creating relationship between parent %s and child %s : %s' % (rule_parent, rule_child, rule))
@@ -605,9 +612,11 @@ def register_rucio() :
                 
                 # Break down the file path
                 f_name = base=os.path.basename(name)
-
+                f_name2 = f_name.replace('%','_')
+                f_name2 = f_name2.replace('+','_')
                 # Check if file is already is registered at a particular destination RSE
-                check = r1.check_replica(lfn=f_name.replace('+','_'), dest_rse=dest)
+                print(f_name2, dest) 
+                check = r1.check_replica(lfn=f_name2, dest_rse=dest)
                 
                 # If it is registered, skip add replica 
                 if check != False : ## needs to be changed to False
@@ -661,8 +670,8 @@ def register_rucio() :
                     # Finally, add them to a general list 
                     n_unreplicated.append(metaData)
                     
-            logger.debug('Your are going to replicate %s files' % str(len(n_unreplicated)))   
-            print('Your are going to replicate %s files' % str(len(n_unreplicated)))
+            logger.debug('You are going to replicate %s files' % str(len(n_unreplicated)))   
+            print('You are going to replicate %s files' % str(len(n_unreplicated)))
             ## Now, create Dummy rules between the ORIGIN and DESTINATION RSEs  
             if len(n_unreplicated) > 0 :
                 r1.outdated_register_replica(n_unreplicated, dest, r1.orgRse)
@@ -748,7 +757,7 @@ class Grafana :
     
 
 
-# In[ ]:
+# In[8]:
 
 
 if __name__ == '__main__':
